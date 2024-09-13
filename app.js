@@ -1,169 +1,76 @@
-const express = require('express');
-const multer = require('multer');
-const mongoose = require('mongoose');
-const Grid = require('gridfs-stream');
-const methodOverride = require('method-override');
-const { GridFsStorage } = require('multer-gridfs-storage');
-const path = require('path');
-const crypto = require('crypto');
+document.getElementById('uploadForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
 
-const app = express();
+    const fileInput = document.getElementById('pdfFile');
+    const titleInput = document.getElementById('pdfTitle');
+    const file = fileInput.files[0];
+    const title = titleInput.value;
 
-app.use(express.json());
-app.use(express.static(__dirname));
-app.use(express.static('public'));
-app.use(methodOverride('_method'));
-app.set('view engine', 'ejs');
-
-app.set('views', path.join(__dirname, 'views'));
-app.use(express.static(path.join(__dirname, 'views')));
-
-const mongoURI = 'mongodb://localhost:27017/pdfdb';
-const conn = mongoose.createConnection(mongoURI);
-
-const pdfSchema = new mongoose.Schema({
-    pdfFile: {
-        type: String,
-        required: true
+    if (!file || !title) {
+        alert("Please choose a PDF and provide a title.");
+        return;
     }
-});
 
-let gfs;
-conn.once('open', () => {
-    gfs = Grid(conn.db, mongoose.mongo);
-    gfs.collection('pdfs'); 
-});
-
-
-const storage = new GridFsStorage({
-    url: mongoURI,
-    file: (req, file) => {
-        return new Promise((resolve, reject) => {
-            crypto.randomBytes(16, (err, buf) => {
-                if (err) {
-                    return reject(err);
-                }
-                const filename = buf.toString('hex') + path.extname(file.originalname);
-                const fileInfo = {
-                    filename: filename,
-                    bucketName: 'pdfs'
-                };
-                resolve(fileInfo);
-            });
-        });
-    }
-});
-
-storage.on('connectionFailed', (err) => {
-    console.error('Connection to MongoDB failed:', err);
-});
-
-
-const PdfSchema = mongoose.model("PdfDetails", pdfSchema);
-const upload = multer({ storage });
-app.get('/',(req,res)=>{
-    res.sendFile(path.join(__dirname,'form.html'))
-})
-
-
-app.post('/upload', upload.single('pdf'), async (req, res) => {
-    console.log(req.file); 
-    const pdfFile = req.file.filename; 
+    const formData = new FormData();
+    formData.append('pdf', file);
+    formData.append('title', title);
 
     try {
-        await PdfSchema.create({ pdfFile });
-        res.send({ status: "Ok" });
-    } catch (error) {
-        res.json({ status: error });
-    }
-
-    if (!req.file) {
-        return res.status(500).json({ error: 'Failed to save file to GridFS' });
-    }
-
-    res.json({ filename: req.file.filename });
-});
-app.post('/upload', upload.single('pdf'), async (req, res) => {
-    try {
-        const title = req.body.title;
-
-        const pdf = new Pdf({
-            title: title,
-            file_id: req.file.id,
-            filename: req.file.filename,
+        const response = await fetch('/upload', {
+            method: 'POST',
+            body: formData
         });
 
-        await pdf.save();
-
-        return res.json({ success: true });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: 'Error uploading PDF' });
-    }
-});
-
-
-app.get('/pdfs', (req, res) => {
-    gfs.files.find().toArray((err, files) => {
-        if (!files || files.length === 0) {
-            return res.json([]);
+        const result = await response.json();
+        if (result.success) {
+            alert('PDF uploaded successfully');
+            fetchPdfList();
+        } else {
+            alert('Upload failed');
         }
-        res.json(files);
-    });
-});
-
-app.get('/pdf/:id', (req, res) => {
-    gfs.files.findOne({ _id: mongoose.Types.ObjectId(req.params.id) }, (err, file) => {
-        if (err || !file) {
-            return res.status(404).json({ err: 'No file exists' });
-        }
-        const readstream = gfs.createReadStream(file.filename);
-        readstream.pipe(res);
-    });
-});
-
-app.get('/pdfview/:id', async (req, res) => {
-    try {
-        const pdf = await PdfSchema.findById(req.params.id); 
-        if (!pdf) return res.status(404).json({ success: false, message: 'PDF not found' });
-
-        res.json(pdf);
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Error retrieving PDF' });
+        console.error('Error uploading PDF:', error);
     }
 });
 
-app.delete('/pdf/:id', async (req, res) => {
+async function fetchPdfList() {
     try {
-        const pdf = await PdfSchema.findById(req.params.id); 
-        if (!pdf) return res.status(404).json({ success: false, message: 'PDF not found' });
+        const response = await fetch('/pdfs');
+        const pdfs = await response.json();
 
-        gfs.remove({ _id: pdf.file_id, root: 'pdfs' }, (err) => {
-            if (err) {
-                return res.status(404).json({ success: false, message: 'Error deleting file' });
-            }
+        const pdfList = document.getElementById('pdfList');
+        pdfList.innerHTML = '';
 
-            PdfSchema.findByIdAndDelete(req.params.id, (err) => {
-                if (err) return res.status(500).json({ success: false });
-                res.json({ success: true });
-            });
+        pdfs.forEach(pdf => {
+            const pdfItem = document.createElement('div');
+            pdfItem.className = 'pdf-item';
+            pdfItem.innerHTML = `
+                <span><strong>${pdf.title}</strong> - <a href="/pdf/${pdf._id}" target="_blank">${pdf.filename}</a></span>
+                <button onclick="deletePdf('${pdf._id}')">Delete</button>
+            `;
+            pdfList.appendChild(pdfItem);
         });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Error deleting PDF' });
+        console.error('Error fetching PDFs:', error);
     }
-});
+}
 
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, '/views/index.html'));
-});
+async function deletePdf(id) {
+    try {
+        const response = await fetch(`/pdf/${id}`, {
+            method: 'DELETE'
+        });
 
-app.get('/pdflist', (req, res) => {
-    res.sendFile(path.join(__dirname, '/views/pdflist.html'));
-});
+        const result = await response.json();
+        if (result.success) {
+            alert('PDF deleted successfully');
+            fetchPdfList();
+        } else {
+            alert('Delete failed');
+        }
+    } catch (error) {
+        console.error('Error deleting PDF:', error);
+    }
+}
 
-app.get('/pdfview', (req, res) => {
-    res.sendFile(path.join(__dirname, '/views/pdfview.html'));
-});
-
-app.listen(3000, () => {
-    console.log('Server started on http://localhost:3000');
-});
+fetchPdfList();
